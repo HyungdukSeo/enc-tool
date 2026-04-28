@@ -134,37 +134,81 @@ static void default_decrypt_out(const char *in_path, char *out, size_t cap)
 /* --------------------------------------------------------------------- */
 
 static int op_encrypt_file(const char *key, const char *in_path,
-                           const char *out_path_opt)
+                           const char *out_path_opt, int in_place)
 {
     char out_buf[UENC_MAX_PATH];
-    const char *out_path = out_path_opt;
-    if (!out_path) {
+    char tmp_buf[UENC_MAX_PATH];
+    const char *out_path;
+
+    if (in_place) {
+        if (out_path_opt) {
+            fprintf(stderr, "--in-place: cannot also specify outFile\n");
+            return UENC_FAILURE;
+        }
+        snprintf(tmp_buf, sizeof(tmp_buf), "%s.enctmp", in_path);
+        out_path = tmp_buf;
+    } else if (out_path_opt) {
+        out_path = out_path_opt;
+    } else {
         default_encrypt_out(in_path, out_buf, sizeof(out_buf));
         out_path = out_buf;
     }
+
     if (uenc_encrypt_file(in_path, out_path, key,
                           UENC_VERSION_DEFAULT) != UENC_SUCCESS) {
         fprintf(stderr, "encrypt failed: %s\n", in_path);
         return UENC_FAILURE;
     }
-    fprintf(stdout, "encrypted: %s -> %s\n", in_path, out_path);
+    if (in_place) {
+        if (rename(out_path, in_path) != 0) {
+            fprintf(stderr, "rename '%s' -> '%s': %s\n",
+                    out_path, in_path, strerror(errno));
+            remove(out_path);
+            return UENC_FAILURE;
+        }
+        fprintf(stdout, "encrypted in-place: %s\n", in_path);
+    } else {
+        fprintf(stdout, "encrypted: %s -> %s\n", in_path, out_path);
+    }
     return UENC_SUCCESS;
 }
 
 static int op_decrypt_file(const char *key, const char *in_path,
-                           const char *out_path_opt)
+                           const char *out_path_opt, int in_place)
 {
     char out_buf[UENC_MAX_PATH];
-    const char *out_path = out_path_opt;
-    if (!out_path) {
+    char tmp_buf[UENC_MAX_PATH];
+    const char *out_path;
+
+    if (in_place) {
+        if (out_path_opt) {
+            fprintf(stderr, "--in-place: cannot also specify outFile\n");
+            return UENC_FAILURE;
+        }
+        snprintf(tmp_buf, sizeof(tmp_buf), "%s.enctmp", in_path);
+        out_path = tmp_buf;
+    } else if (out_path_opt) {
+        out_path = out_path_opt;
+    } else {
         default_decrypt_out(in_path, out_buf, sizeof(out_buf));
         out_path = out_buf;
     }
+
     if (uenc_decrypt_file(in_path, out_path, key) != UENC_SUCCESS) {
         fprintf(stderr, "decrypt failed: %s\n", in_path);
         return UENC_FAILURE;
     }
-    fprintf(stdout, "decrypted: %s -> %s\n", in_path, out_path);
+    if (in_place) {
+        if (rename(out_path, in_path) != 0) {
+            fprintf(stderr, "rename '%s' -> '%s': %s\n",
+                    out_path, in_path, strerror(errno));
+            remove(out_path);
+            return UENC_FAILURE;
+        }
+        fprintf(stdout, "decrypted in-place: %s\n", in_path);
+    } else {
+        fprintf(stdout, "decrypted: %s -> %s\n", in_path, out_path);
+    }
     return UENC_SUCCESS;
 }
 
@@ -180,11 +224,23 @@ typedef struct {
 } batch_stats_t;
 
 static int batch_walk(const char *root, const char *key, int encrypt_mode,
-                      const char *codec_filter, batch_stats_t *st);
+                      int in_place, const char *codec_filter,
+                      batch_stats_t *st);
+
+static int finalize_in_place(const char *tmp, const char *path)
+{
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "rename '%s' -> '%s': %s\n",
+                tmp, path, strerror(errno));
+        remove(tmp);
+        return UENC_FAILURE;
+    }
+    return UENC_SUCCESS;
+}
 
 static int batch_handle_file(const char *path, const char *key,
-                             int encrypt_mode, const char *codec_filter,
-                             batch_stats_t *st)
+                             int encrypt_mode, int in_place,
+                             const char *codec_filter, batch_stats_t *st)
 {
     st->total++;
     if (encrypt_mode) {
@@ -206,16 +262,27 @@ static int batch_handle_file(const char *path, const char *key,
             return UENC_SUCCESS;
         }
         char out[UENC_MAX_PATH];
-        default_encrypt_out(path, out, sizeof(out));
+        if (in_place) snprintf(out, sizeof(out), "%s.enctmp", path);
+        else          default_encrypt_out(path, out, sizeof(out));
+
         if (uenc_encrypt_file(path, out, key,
-                              UENC_VERSION_DEFAULT) == UENC_SUCCESS) {
+                              UENC_VERSION_DEFAULT) != UENC_SUCCESS) {
+            st->failed++;
+            return UENC_FAILURE;
+        }
+        if (in_place) {
+            if (finalize_in_place(out, path) != UENC_SUCCESS) {
+                st->failed++;
+                return UENC_FAILURE;
+            }
+            fprintf(stdout, "encrypted in-place [%s]: %s\n",
+                    codec_name(c), path);
+        } else {
             fprintf(stdout, "encrypted [%s]: %s -> %s\n",
                     codec_name(c), path, out);
-            st->processed++;
-            return UENC_SUCCESS;
         }
-        st->failed++;
-        return UENC_FAILURE;
+        st->processed++;
+        return UENC_SUCCESS;
     } else {
         if (!uenc_is_encrypted_file(path, NULL)) {
             fprintf(stdout, "skip (not encrypted): %s\n", path);
@@ -223,19 +290,30 @@ static int batch_handle_file(const char *path, const char *key,
             return UENC_SUCCESS;
         }
         char out[UENC_MAX_PATH];
-        default_decrypt_out(path, out, sizeof(out));
-        if (uenc_decrypt_file(path, out, key) == UENC_SUCCESS) {
-            fprintf(stdout, "decrypted: %s -> %s\n", path, out);
-            st->processed++;
-            return UENC_SUCCESS;
+        if (in_place) snprintf(out, sizeof(out), "%s.enctmp", path);
+        else          default_decrypt_out(path, out, sizeof(out));
+
+        if (uenc_decrypt_file(path, out, key) != UENC_SUCCESS) {
+            st->failed++;
+            return UENC_FAILURE;
         }
-        st->failed++;
-        return UENC_FAILURE;
+        if (in_place) {
+            if (finalize_in_place(out, path) != UENC_SUCCESS) {
+                st->failed++;
+                return UENC_FAILURE;
+            }
+            fprintf(stdout, "decrypted in-place: %s\n", path);
+        } else {
+            fprintf(stdout, "decrypted: %s -> %s\n", path, out);
+        }
+        st->processed++;
+        return UENC_SUCCESS;
     }
 }
 
 static int batch_walk(const char *root, const char *key, int encrypt_mode,
-                      const char *codec_filter, batch_stats_t *st)
+                      int in_place, const char *codec_filter,
+                      batch_stats_t *st)
 {
     DIR *dp = opendir(root);
     if (!dp) {
@@ -249,6 +327,11 @@ static int batch_walk(const char *root, const char *key, int encrypt_mode,
              (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
             continue;
         }
+        /* Skip our own in-place temporaries to avoid re-processing them. */
+        size_t nlen = strlen(de->d_name);
+        if (nlen >= 7 && strcmp(de->d_name + nlen - 7, ".enctmp") == 0) {
+            continue;
+        }
         char path[UENC_MAX_PATH];
         int n = snprintf(path, sizeof(path), "%s/%s", root, de->d_name);
         if (n < 0 || (size_t)n >= sizeof(path)) {
@@ -257,34 +340,50 @@ static int batch_walk(const char *root, const char *key, int encrypt_mode,
             continue;
         }
         if (is_directory(path)) {
-            batch_walk(path, key, encrypt_mode, codec_filter, st);
+            batch_walk(path, key, encrypt_mode, in_place, codec_filter, st);
         } else if (is_regular_file(path)) {
-            batch_handle_file(path, key, encrypt_mode, codec_filter, st);
+            batch_handle_file(path, key, encrypt_mode, in_place,
+                              codec_filter, st);
         }
     }
     closedir(dp);
     return UENC_SUCCESS;
 }
 
-static int op_batch(const char *key, const char *root, int encrypt_mode,
-                    const char *codec_filter)
+static int op_batch_one(const char *key, const char *root, int encrypt_mode,
+                        int in_place, const char *codec_filter,
+                        batch_stats_t *st)
 {
     if (!is_directory(root)) {
         fprintf(stderr, "not a directory: %s\n", root);
         return UENC_FAILURE;
     }
+    fprintf(stdout, "==> batch %s%s: %s%s%s%s\n",
+            encrypt_mode ? "encrypt" : "decrypt",
+            in_place ? " (in-place)" : "",
+            root,
+            codec_filter ? "  (filter=" : "",
+            codec_filter ? codec_filter : "",
+            codec_filter ? ")" : "");
+    return batch_walk(root, key, encrypt_mode, in_place, codec_filter, st);
+}
+
+/* Process one or more directories. dirs[0..n_dirs-1] each get walked. */
+static int op_batch(const char *key, char **dirs, int n_dirs,
+                    int encrypt_mode, int in_place,
+                    const char *codec_filter)
+{
     batch_stats_t st = {0};
-    if (codec_filter) {
-        fprintf(stdout, "==> batch %s: %s  (filter=%s)\n",
-                encrypt_mode ? "encrypt" : "decrypt", root, codec_filter);
-    } else {
-        fprintf(stdout, "==> batch %s: %s\n",
-                encrypt_mode ? "encrypt" : "decrypt", root);
+    int any_fail = 0;
+    for (int i = 0; i < n_dirs; i++) {
+        if (op_batch_one(key, dirs[i], encrypt_mode, in_place,
+                         codec_filter, &st) != UENC_SUCCESS) {
+            any_fail = 1;
+        }
     }
-    batch_walk(root, key, encrypt_mode, codec_filter, &st);
     fprintf(stdout, "==> done. total=%d processed=%d skipped=%d failed=%d\n",
             st.total, st.processed, st.skipped, st.failed);
-    return st.failed > 0 ? UENC_FAILURE : UENC_SUCCESS;
+    return (any_fail || st.failed > 0) ? UENC_FAILURE : UENC_SUCCESS;
 }
 
 /* --------------------------------------------------------------------- */
@@ -308,18 +407,20 @@ static void usage(const char *prog)
 "    %s -df <key> <inFile> [outFile]   Decrypt single file\n"
 "    %s -Ef <inFile> [outFile]         Encrypt file with saved key\n"
 "    %s -Df <inFile> [outFile]         Decrypt file with saved key\n"
+"      (add --in-place to overwrite the source instead of writing .enc)\n"
 "\n"
 "  Batch mode (recursive directory walk; auto codec detection):\n"
-"    %s -eb <key> <dir> [--codec LIST] Batch encrypt with key\n"
-"    %s -db <key> <dir>                Batch decrypt with key\n"
-"    %s -Eb <dir> [--codec LIST]       Batch encrypt with saved key\n"
-"    %s -Db <dir>                      Batch decrypt with saved key\n"
+"    %s -eb <key> <dir> [<dir>...] [--codec LIST] [--in-place]\n"
+"    %s -db <key> <dir> [<dir>...]                [--in-place]\n"
+"    %s -Eb <dir> [<dir>...]        [--codec LIST] [--in-place]\n"
+"    %s -Db <dir> [<dir>...]                       [--in-place]\n"
 "\n"
 "  Misc:\n"
-"    %s -i <file>                      Show codec / encryption info\n"
+"    %s -i <file> [<file>...]          Show codec / encryption info\n"
 "    %s -h | --help                    Show this help\n"
 "\n"
 "  --codec LIST  comma-separated subset of {amrnb,amrwb,evs,pcma,pcmu}\n"
+"  --in-place    overwrite source files instead of writing .enc/.dec siblings\n"
 "  Saved key location: $%s/%s, default ./%s\n"
 "  Encrypted file format: \"#!ENC1\\n\" + Salted__ + 8B salt + AES-256-CBC ciphertext\n"
 "  Algorithm: AES-256-CBC, key+IV via PBKDF2-HMAC-SHA1 (%d iter)\n",
@@ -346,9 +447,9 @@ static const char *find_long_opt(int argc, char **argv, const char *name)
     return NULL;
 }
 
-/* Strip --codec[=...] from argv in place; returns the new argc. The value
- * is captured by find_long_opt above, called separately. */
-static int strip_long_opt(int argc, char **argv, const char *name)
+/* Strip a valued option like --codec[=foo] from argv. Consumes one trailing
+ * argument if the value follows in the next argv slot. */
+static int strip_valued_opt(int argc, char **argv, const char *name)
 {
     size_t nlen = strlen(name);
     int w = 1;
@@ -360,6 +461,25 @@ static int strip_long_opt(int argc, char **argv, const char *name)
         argv[w++] = argv[i];
     }
     return w;
+}
+
+/* Strip a boolean flag like --in-place from argv. */
+static int strip_flag(int argc, char **argv, const char *name)
+{
+    int w = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], name) == 0) continue;
+        argv[w++] = argv[i];
+    }
+    return w;
+}
+
+static int has_flag(int argc, char **argv, const char *name)
+{
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], name) == 0) return 1;
+    }
+    return 0;
 }
 
 static int op_info(const char *path)
@@ -393,9 +513,11 @@ int main(int argc, char **argv)
         return UENC_SUCCESS;
     }
 
-    /* Pre-extract --codec before positional dispatch. */
+    /* Pre-extract --codec / --in-place before positional dispatch. */
     const char *codec_filter = find_long_opt(argc, argv, "--codec");
-    argc = strip_long_opt(argc, argv, "--codec");
+    argc = strip_valued_opt(argc, argv, "--codec");
+    int in_place = has_flag(argc, argv, "--in-place");
+    argc = strip_flag(argc, argv, "--in-place");
 
     const char *flag = argv[1];
     char saved_key[UENC_MAX_KEY_LEN + 1];
@@ -465,49 +587,53 @@ int main(int argc, char **argv)
     /* ---- File mode -------------------------------------------------- */
     if (strcmp(flag, "-ef") == 0) {
         if (argc < 4 || argc > 5) { usage(argv[0]); return UENC_FAILURE; }
-        return op_encrypt_file(argv[2], argv[3], argc == 5 ? argv[4] : NULL);
+        return op_encrypt_file(argv[2], argv[3],
+                               argc == 5 ? argv[4] : NULL, in_place);
     }
     if (strcmp(flag, "-df") == 0) {
         if (argc < 4 || argc > 5) { usage(argv[0]); return UENC_FAILURE; }
-        return op_decrypt_file(argv[2], argv[3], argc == 5 ? argv[4] : NULL);
+        return op_decrypt_file(argv[2], argv[3],
+                               argc == 5 ? argv[4] : NULL, in_place);
     }
     if (strcmp(flag, "-Ef") == 0) {
         if (argc < 3 || argc > 4) { usage(argv[0]); return UENC_FAILURE; }
         if (uenc_load_key(saved_key, sizeof(saved_key)) != UENC_SUCCESS) {
             return UENC_FAILURE;
         }
-        return op_encrypt_file(saved_key, argv[2], argc == 4 ? argv[3] : NULL);
+        return op_encrypt_file(saved_key, argv[2],
+                               argc == 4 ? argv[3] : NULL, in_place);
     }
     if (strcmp(flag, "-Df") == 0) {
         if (argc < 3 || argc > 4) { usage(argv[0]); return UENC_FAILURE; }
         if (uenc_load_key(saved_key, sizeof(saved_key)) != UENC_SUCCESS) {
             return UENC_FAILURE;
         }
-        return op_decrypt_file(saved_key, argv[2], argc == 4 ? argv[3] : NULL);
+        return op_decrypt_file(saved_key, argv[2],
+                               argc == 4 ? argv[3] : NULL, in_place);
     }
 
-    /* ---- Batch mode ------------------------------------------------- */
+    /* ---- Batch mode (one or more directories) ----------------------- */
     if (strcmp(flag, "-eb") == 0) {
-        if (argc != 4) { usage(argv[0]); return UENC_FAILURE; }
-        return op_batch(argv[2], argv[3], 1, codec_filter);
+        if (argc < 4) { usage(argv[0]); return UENC_FAILURE; }
+        return op_batch(argv[2], &argv[3], argc - 3, 1, in_place, codec_filter);
     }
     if (strcmp(flag, "-db") == 0) {
-        if (argc != 4) { usage(argv[0]); return UENC_FAILURE; }
-        return op_batch(argv[2], argv[3], 0, codec_filter);
+        if (argc < 4) { usage(argv[0]); return UENC_FAILURE; }
+        return op_batch(argv[2], &argv[3], argc - 3, 0, in_place, codec_filter);
     }
     if (strcmp(flag, "-Eb") == 0) {
-        if (argc != 3) { usage(argv[0]); return UENC_FAILURE; }
+        if (argc < 3) { usage(argv[0]); return UENC_FAILURE; }
         if (uenc_load_key(saved_key, sizeof(saved_key)) != UENC_SUCCESS) {
             return UENC_FAILURE;
         }
-        return op_batch(saved_key, argv[2], 1, codec_filter);
+        return op_batch(saved_key, &argv[2], argc - 2, 1, in_place, codec_filter);
     }
     if (strcmp(flag, "-Db") == 0) {
-        if (argc != 3) { usage(argv[0]); return UENC_FAILURE; }
+        if (argc < 3) { usage(argv[0]); return UENC_FAILURE; }
         if (uenc_load_key(saved_key, sizeof(saved_key)) != UENC_SUCCESS) {
             return UENC_FAILURE;
         }
-        return op_batch(saved_key, argv[2], 0, codec_filter);
+        return op_batch(saved_key, &argv[2], argc - 2, 0, in_place, codec_filter);
     }
 
     /* ---- Info ------------------------------------------------------- */
