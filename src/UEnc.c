@@ -164,10 +164,11 @@ static int write_file_header(FILE *out, int version, const unsigned char *salt)
     unsigned char hdr[UENC_HEADER_LEN];
     size_t pos = 0;
 
+    /* Line 1: "#!ENC<v>\n" */
     memcpy(hdr + pos, UENC_MAGIC, UENC_MAGIC_LEN); pos += UENC_MAGIC_LEN;
     hdr[pos++] = (unsigned char)('0' + version);
     hdr[pos++] = '\n';
-    memcpy(hdr + pos, UENC_SALTED_STR, UENC_SALTED_STR_LEN); pos += UENC_SALTED_STR_LEN;
+    /* Line 2 begins: 8 random salt bytes (then ciphertext follows) */
     memcpy(hdr + pos, salt, UENC_SALT_LEN); pos += UENC_SALT_LEN;
 
     if (fwrite(hdr, 1, pos, out) != pos) {
@@ -198,14 +199,8 @@ static int read_file_header(FILE *in, int *version_out, unsigned char *salt_out)
         fprintf(stderr, "[UEnc] malformed header (missing newline)\n");
         return UENC_FAILURE;
     }
-    if (memcmp(hdr + UENC_MAGIC_LEN + 2, UENC_SALTED_STR,
-               UENC_SALTED_STR_LEN) != 0) {
-        fprintf(stderr, "[UEnc] malformed header (missing Salted__ tag)\n");
-        return UENC_FAILURE;
-    }
-    memcpy(salt_out,
-           hdr + UENC_MAGIC_LEN + 2 + UENC_SALTED_STR_LEN,
-           UENC_SALT_LEN);
+    /* Salt is the first 8 bytes of line 2 */
+    memcpy(salt_out, hdr + UENC_LINE1_LEN, UENC_SALT_LEN);
     if (version_out) *version_out = v;
     return UENC_SUCCESS;
 }

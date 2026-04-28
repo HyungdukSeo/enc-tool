@@ -17,13 +17,24 @@ extern "C" {
 #define UENC_PBKDF2_ITER            10000
 #define UENC_BUFFER_SIZE            4096
 
-/* Audio-file framing: "#!ENC" + version digit + '\n' + "Salted__" + salt */
+/*
+ * Audio-file framing:
+ *   Line 1 : "#!ENC<v>\n"   ← only marker; presence of this line means
+ *                              the file is enc_tool ciphertext
+ *   Line 2+: <8B salt> + <AES-256-CBC ciphertext>
+ *
+ * Decryption: strip line 1, read 8B salt, decrypt the rest with the
+ * key+IV derived from PBKDF2(password, salt). The decryption output is
+ * byte-for-byte identical to the original input file.
+ */
 #define UENC_MAGIC                  "#!ENC"
 #define UENC_MAGIC_LEN              5
+#define UENC_LINE1_LEN              (UENC_MAGIC_LEN + 1 /*ver*/ + 1 /*\n*/)
+#define UENC_HEADER_LEN             (UENC_LINE1_LEN + UENC_SALT_LEN)
+
+/* String-mode (base64) keeps the openssl-compatible "Salted__" prefix. */
 #define UENC_SALTED_STR             "Salted__"
 #define UENC_SALTED_STR_LEN         8
-#define UENC_HEADER_LEN             (UENC_MAGIC_LEN + 1 /*ver*/ + 1 /*\n*/ + \
-                                     UENC_SALTED_STR_LEN + UENC_SALT_LEN)
 
 #define UENC_VERSION_DEFAULT        1
 #define UENC_VERSION_MIN            1
