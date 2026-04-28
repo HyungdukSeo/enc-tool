@@ -8,9 +8,10 @@ plus ENCTOOL-compatible string operations.
   -iter 10000 -md sha1`.
 * String-mode output: base64 with the `Salted__` prefix (`U2FsdGVkX1...`),
   identical to `openssl enc -base64 -A`.
-* Audio-file format: `#!ENC<v>\n` magic + `Salted__` + 8B salt + ciphertext.
-  `<v>` is a single decimal digit (currently 1) so additional schemes can be
-  added without breaking older files.
+* Audio-file format: line 1 is `#!ENC<v>\n` (the only marker), then line 2
+  begins with an 8-byte salt followed by AES-256-CBC ciphertext. `<v>` is a
+  single decimal digit (currently 1) so additional schemes can be added
+  without breaking older files. Total overhead: 16–31 bytes.
 * The original file (including any AMR/EVS codec header `#!AMR`,
   `#!AMR-WB`, `#!EVS_MC1.0`, or raw PCMA/PCMU body) is encrypted byte-for-byte;
   decryption restores it exactly.
@@ -178,5 +179,7 @@ $ echo -n "hi" | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 10000 -md sha1 -ba
 hi
 ```
 
-For audio files, strip the 7-byte `#!ENC1\n` prefix and the rest is a
-standard `openssl enc -aes-256-cbc -salt`-format payload.
+Audio files use a self-contained format (not `openssl enc`-compatible
+directly): line 1 is `#!ENC<v>\n`, line 2 begins with the raw 8-byte salt
+followed by AES-256-CBC ciphertext. See `MANUAL_KR.md` §8 for a manual
+shell-only decryption recipe if needed.

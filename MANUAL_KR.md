@@ -117,17 +117,34 @@ cd src && make ARCH=Linux_x86_64 CC=icc clean all install
 ### 3.2 음원 파일 포맷
 
 ```
+1번째 줄: "#!ENC<v>\n"        ← 이 줄만 보고 암호화 여부 판단
+2번째 줄~: <salt 8B><AES-256-CBC ciphertext>
+
 오프셋    크기    내용
 0x00      5       "#!ENC"             고정 매직
 0x05      1       버전 ('1' = 0x31)   향후 알고리즘 변경 시 증가
-0x06      1       '\n' (0x0A)         구분자
-0x07      8       "Salted__"          openssl enc 호환 prefix
-0x0F      8       salt                난수 8 bytes
-0x17 ~    N       AES-256-CBC ciphertext (PKCS#7 padded)
+0x06      1       '\n' (0x0A)         줄 구분자 (1번째 줄 끝)
+0x07      8       salt                난수 8 bytes (2번째 줄 시작)
+0x0F ~    N       AES-256-CBC ciphertext (PKCS#7 padded)
 ```
 
+**복호화 동작 모델:**
+
+1. 1번째 줄 `#!ENC<v>\n` 읽어 암호화 여부 + 버전 확인
+2. 2번째 줄부터 읽음 → 맨 앞 8B 가 salt, 나머지가 ciphertext
+3. salt 로부터 PBKDF2 로 키+IV 도출 → ciphertext 복호화
+4. 결과는 **원본 음원 파일과 바이트 단위로 100% 동일**
+
 원본 파일(헤더 `#!AMR`/`#!AMR-WB`/`#!EVS_MC1.0` 포함, PCMA/PCMU 본문 포함)이
-**통째로** 암호화되므로 복호화하면 **바이트 단위로 100% 동일**한 원본이 복원됩니다.
+**통째로** 암호화됩니다. 헤더 오버헤드: 7B(`#!ENC1\n`) + 8B(salt) + 1~16B(AES 패딩)
+= **총 16~31B 증가**.
+
+> 1번째 줄만으로 암호화 여부를 판단하므로, 다음과 같이 쉘에서도 빠르게 확인 가능:
+> ```sh
+> head -c 7 file.amr.enc          # "#!ENC1\n" 보이면 암호화된 파일
+> head -n 1 file.amr.enc           # 같은 결과 (텍스트로)
+> tail -n +2 file.amr.enc | wc -c  # 1번째 줄 뺀 나머지 크기 (salt+ct)
+> ```
 
 ### 3.3 문자열 포맷
 
@@ -487,9 +504,13 @@ cp /tmp/audio_test/clip.amr /tmp/clip.amr.orig
 $ENC -Ef /tmp/audio_test/clip.amr /tmp/clip.amr.enc
 # → encrypted: /tmp/audio_test/clip.amr -> /tmp/clip.amr.enc
 
-# 헤더 확인 — "#!ENC1.Salted__" 보이면 정상
+# 1번째 줄 = "#!ENC1" 확인
+head -n 1 /tmp/clip.amr.enc
+# → #!ENC1
+
+# 바이너리 헤더 확인 (앞 7B "#!ENC1\n", 그 뒤 8B 가 salt, 그 뒤가 ciphertext)
 head -c 16 /tmp/clip.amr.enc | xxd
-# 00000000: 2321 454e 4331 0a53 616c 7465 645f 5f.. #!ENC1.Salted__.
+# 00000000: 2321 454e 4331 0a __ __ __ __ __ __ __ __  #!ENC1.<8B salt>
 
 # 복호화
 $ENC -Df /tmp/clip.amr.enc /tmp/clip.amr.dec
@@ -568,7 +589,8 @@ $ENC -Eb /tmp/audio_test 2>&1 | grep "failed" | head
 
 ## 8. openssl CLI 와 호환
 
-문자열 모드 출력은 `openssl enc` 명령과 양방향으로 호환됩니다.
+**문자열 모드** 출력은 `openssl enc` 명령과 양방향으로 호환됩니다 (`Salted__`
+prefix + base64 형식).
 
 ```sh
 $ ./enc_tool.exe -e skbbiz "hello world" \
@@ -581,15 +603,29 @@ $ echo -n "hi" \
 hi
 ```
 
-음원 파일은 7바이트 prefix(`#!ENC1\n`)만 떼어내면 그대로 `openssl enc` 호환:
+**파일 모드**는 `#!ENC1\n` + raw salt + ciphertext 의 자체 포맷이라 `openssl enc`
+와 직접 호환되지 않습니다. 다만 1번째 줄만 떼어내면 8B salt + AES-256-CBC
+ciphertext 라는 표준 구조이므로, 다음과 같이 수동 복호화가 가능합니다:
 
 ```sh
-$ tail -c +8 clip.amr.enc \
-  | openssl enc -d -aes-256-cbc -salt -pbkdf2 -iter 10000 -md sha1 -k skbbiz \
-  > clip.amr.dec
-$ cmp clip.amr.orig clip.amr.dec && echo "OK"
-OK
+# 1번째 줄("#!ENC1\n") 잘라낸 다음 salt 8B 와 ciphertext 분리
+tail -n +2 clip.amr.enc > body.bin
+SALT=$(head -c 8 body.bin | xxd -p)        # hex 문자열
+tail -c +9 body.bin > ciphertext.bin
+
+# PBKDF2-SHA1 으로 key+IV 도출 (key 32B + IV 16B = 48B)
+KEYIV=$(openssl kdf -keylen 48 -kdfopt digest:SHA1 \
+        -kdfopt pass:skbbiz -kdfopt hexsalt:$SALT \
+        -kdfopt iter:10000 PBKDF2 | tr -d ':')
+KEY=${KEYIV:0:64}
+IV=${KEYIV:64:32}
+
+openssl enc -d -aes-256-cbc -K $KEY -iv $IV -in ciphertext.bin -out clip.amr.dec
+cmp clip.amr.orig clip.amr.dec && echo "OK"
 ```
+
+> 보통은 그냥 `enc_tool.exe -Df` 를 쓰는 게 훨씬 간편합니다. 위 쉘 변환은 디버깅
+> 용도일 때만 필요합니다.
 
 ---
 
@@ -646,8 +682,8 @@ unset KEY_LOC                     # 기본값(./enc.key)으로 되돌림
 ### Q. 암호화한 파일이 원본보다 큰데 정상인가요?
 
 정상입니다. 추가 양:
-- 헤더 7B (`#!ENC1\n`) + `Salted__` 8B + 솔트 8B + AES 패딩 1~16B
-- → **총 24~39 bytes 증가**
+- 헤더 7B (`#!ENC1\n`) + 솔트 8B + AES 패딩 1~16B
+- → **총 16~31 bytes 증가**
 
 ### Q. 같은 파일을 두 번 암호화하면 결과가 같나요?
 
