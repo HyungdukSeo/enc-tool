@@ -1,78 +1,51 @@
-# target & paths
-OUTPUT_FILE	= libPA.a
-INSTALL_DIR	= ../lib/$(ARCH)
-INCLUDE_DIR	= ../include
+# libUEnc - audio file AES-256-CBC encryption library
+#
+# Build:
+#   make                              -> Linux3.10.0_ICC/libUEnc.a
+#   make install                      -> ../lib/$(ARCH)/libUEnc.a + ../include/UEnc.h
+#   make clean
+#
+# Variables (override on the command line):
+#   ARCH       Target subdir (default: Linux3.10.0_ICC, matches lib/ layout)
+#   CC         Compiler   (default: gcc, set CC=icc for Intel CC if available)
+#   CFLAGS     Extra C flags
 
-# source
-SRCS 		= 	Pa.c PaDFM.c
-HDRS 		= 	$(SRCS:.c=.h)
+OUTPUT_FILE  = libUEnc.a
+ARCH        ?= Linux3.10.0_ICC
+INSTALL_DIR  = ../lib/$(ARCH)
+INCLUDE_DIR  = ../include
 
-# IPG libraries
-G_LIBS		=	-lgobject-2.0 -lglib-2.0 -lgio-2.0 -lgobject-2.0 -lglib-2.0
-STK_LIBS 	= 	-lPs -lEmime -lGsb -lGs
-BASE_LIBS	= 	-lSec
-AS_LIBS 	= 	-lAsBcc -lASsm -lASync -lAsU -lAsI -lAsM2Sdp -lAXSrtp -lSec
-MPP_LIBS	= 	-lMfunc -lMpObj -lMPkt -lMpSkUdpRsc -lMpSk -lMpUtil
-CORE_LIBS 	= 	-lMms -lAp -lHa \
-				-lCe$(FAST_OPT) -lIf$(FAST_OPT) -lSk$(FAST_OPT) -lU$(FAST_OPT) -lGen$(FAST_OPT)
-OS_LIBS 	= 	$(SYSLIB) 
-LIBS 		= 	$(AS_LIBS) $(STK_LIBS) $(MPP_LIBS) $(BASE_LIBS) $(CORE_LIBS) $(OS_LIBS) \
-				$(G_LIBS)
+SRCS         = UEnc.c
+HDRS         = UEnc.h
+OBJS         = $(SRCS:%.c=$(ARCH)/%.o)
 
-CC 			= 	$(COMPILER)
+CC          ?= gcc
+AR          ?= ar
+RANLIB      ?= ranlib
 
-DFLAGS 		= 	$(XWARN) -D$(PLATFORM) -DERRDEBUG -D_REENTRANT $(DFLAGS_OPT) \
-				-DBLOCK_$(BLKNAME) -DSCU_INC
+# OpenSSL: prefer pkg-config when available, fall back to system defaults.
+OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
 
-IFLAGS 		= 	-I. \
-				-I$(XN_HOME) \
-				-I$(XN_CORE)/include \
-				-I$(XN_HOME)/STK/CORE/include \
-				-I$(XN_HOME)/STK/ABNF/include \
-				-I$(XN_HOME)/STK/SIP/include \
-				-I$(XN_HOME)/STK/MGCP/include \
-				-I$(XN_HOME)/MPP2.0/include \
-				-I$(XN_HOME)/BASE/include/COM/msg\
-				-I$(XN_HOME)/$(BLKDIR)/include \
-				-I/usr/include/glib-2.0 \
-				-I/usr/lib64/glib-2.0/include \
+CFLAGS      ?= -O2 -g -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L
+CFLAGS      += $(OPENSSL_CFLAGS) -I.
 
-LDFLAGS 	= 	-L$(XN_CORE)/lib/$(ARCH) \
-				-L$(XN_HOME)/STK/CORE/lib/$(ARCH) \
-				-L$(XN_HOME)/STK/SIP/lib/$(ARCH) \
-				-L$(XN_HOME)/STK/ABNF/lib/$(ARCH) \
-				-L$(XN_HOME)/STK/MGCP/lib/$(ARCH) \
-				-L$(XN_HOME)/MPP2.0/lib/$(ARCH) \
-				-L$(XN_HOME)/MPP2.0/lib/$(ARCH)/MPbase/ \
-				-L$(XN_HOME)/MPP2.0/lib/$(ARCH)/MPfunc/ \
-				-L$(XN_HOME)/BASE/lib/$(ARCH) \
-                
-CFLAGS 		= 	$(DFLAGS) $(IFLAGS)
+.PHONY: all clean install
 
-OBJS 		= 	$(SRCS:%.c=$(ARCH)/%.o)
+all: $(ARCH)/$(OUTPUT_FILE)
 
-CLEAR_TYPES	= o a 
+$(ARCH)/$(OUTPUT_FILE): $(OBJS)
+	$(AR) cru $@ $^
+	$(RANLIB) $@
 
-# Default target
-.PHONY: all
-all: $(OUTPUT_FILE)
+$(ARCH)/%.o: %.c $(HDRS)
+	@mkdir -p $(ARCH)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-.PHONY: install
-install:
-	mkdir -p $(INSTALL_DIR)
-	mkdir -p $(INCLUDE_DIR)
-	cp $(ARCH)/$(OUTPUT_FILE) $(INSTALL_DIR)
-	cp *.h $(INCLUDE_DIR)
+install: $(ARCH)/$(OUTPUT_FILE)
+	@mkdir -p $(INSTALL_DIR)
+	@mkdir -p $(INCLUDE_DIR)
+	cp $(ARCH)/$(OUTPUT_FILE) $(INSTALL_DIR)/
+	cp $(HDRS) $(INCLUDE_DIR)/
 
-.PHONY: clean 
 clean:
-	for file in $(CLEAR_TYPES); do rm -f *.$$file; done
-
-$(OUTPUT_FILE): $(OBJS)
-	ar cru $(ARCH)/$@ $^;\
-	ranlib $(ARCH)/$@
-
-$(ARCH)/%.o	: 	%.c
-	\mkdir -p $(ARCH)
-	$(CC) -g $(OUTPUT_OPTION) $(CFLAGS) -c $< -o $@
-	
+	rm -rf $(ARCH)

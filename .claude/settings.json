@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openssl version *)",
+      "Bash(pkg-config --cflags --libs openssl)"
+    ]
+  }
+}
