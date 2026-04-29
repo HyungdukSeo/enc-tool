@@ -479,6 +479,116 @@ encrypted in-place: /data/audio/clip.amr
 
 ---
 
+## 자동 시험기 (`test/run_tests.sh`)
+
+모든 기능을 한 번에 순차 시험하는 셸 스크립트가 포함돼 있습니다.
+
+### 음원 샘플 디렉토리 구성 (코덱당 1개 이상)
+
+```
+<SAMPLES_DIR>/
+  ├── *.amr | *.amrnb              (AMRNB; 헤더 또는 확장자로 감지)
+  ├── *.awb | *.amrwb              (AMRWB)
+  ├── *.evs                        (EVS)
+  ├── *.pcma | *.alaw | *.al       (PCMA)
+  └── *.pcmu | *.ulaw | *.mulaw | *.ul   (PCMU)
+```
+
+* 코덱당 1개씩만 있으면 모든 시험이 가능합니다 (시험기가 코덱별 첫 1개를 골라 사용)
+* 하위 디렉토리로 정리해도 자동 검색됨
+* 샘플이 없는 코덱은 해당 시험만 자동 스킵 (전체 실패가 되지 않음)
+
+### 음원 디렉토리 지정 — 4가지 방법 (우선순위 순)
+
+```sh
+# 1) --samples-dir 옵션 (가장 우선)
+bash test/run_tests.sh --samples-dir /data/audio_samples
+bash test/run_tests.sh -d /data/audio_samples
+
+# 2) 위치 인자
+bash test/run_tests.sh /data/audio_samples
+
+# 3) 환경변수
+export ENC_TEST_SAMPLES=/data/audio_samples
+bash test/run_tests.sh
+
+# 4) 기본 경로: 스크립트 옆 test/samples/
+bash test/run_tests.sh                 # test/samples/ 에 파일이 있으면 자동 사용
+```
+
+위 어느 것도 해당이 없으면 **합성 샘플**(헤더만 정확한 1KB 가짜 파일)이 자동
+생성되어 스모크 테스트로 동작합니다. 운영 환경에서 실음원 없이 시험기가 통과하는
+일을 막으려면 `--strict` 옵션을 추가하세요:
+
+```sh
+bash test/run_tests.sh --strict --samples-dir /data/audio_samples
+# → 디렉토리가 없거나 비어있으면 즉시 에러로 종료, 합성 fallback 안 함
+```
+
+### 도움말 보기
+
+```sh
+bash test/run_tests.sh -h
+```
+
+### 시험 항목 (총 85개 정도)
+
+| 섹션 | 내용 |
+|---|---|
+| 0_build | enc_tool.exe 존재/빌드, `-h` 동작 |
+| 1_samples | 샘플 디렉토리 준비, 코덱별 샘플 탐지 |
+| 2_string_mode | `-s`/`-l`/`-e`/`-d`/`-E`/`-D`, openssl CLI 양방향 호환 |
+| 3_single_file_roundtrip | 5종 코덱 단일 파일 `-Ef`/`-Df` 왕복 (헤더, byte-identical) |
+| 4_single_file_in_place | 5종 코덱 `--in-place` 왕복 (SHA256 동일 확인) |
+| 5_info | `-i` 가 5종 코덱 + 암호화 파일 인식 |
+| 6_batch_sidecar | `-Eb`/`-Db` 사이드카 모드, 비음원 스킵, 이미 암호화된 파일 스킵 |
+| 7_batch_in_place | `-Eb`/`-Db` `--in-place` 모드, 사이드카 미생성, 모든 파일 헤더 검증 |
+| 8_codec_filter | `--codec amrnb` 필터링 동작 |
+| 9_multi_dir | 3개 디렉토리 동시 지정 처리 |
+| 10_error_cases | 잘못된 키, 평문을 `-Df`, 없는 파일, 빈 호출, 알 수 없는 플래그 |
+
+### 출력 예시
+
+```
+=== 3_single_file_roundtrip ===
+  [PASS] AMRNB -Ef → .enc
+  [PASS] AMRNB .enc 헤더 = '#!ENC1\n'
+  [PASS] AMRNB -Df → 복호화 파일
+  [PASS] AMRNB 원본과 byte-identical
+  [PASS] AMRNB 암호문은 원본과 다름
+  ...
+
+========================================
+  TEST SUMMARY
+========================================
+  소요 시간    : 2s
+  통과         : 85
+  실패         : 0
+  스킵         : 0
+
+  섹션별:
+    ✓ 0_build                        pass=2
+    ✓ 2_string_mode                  pass=10
+    ✓ 3_single_file_roundtrip        pass=25
+    ...
+
+  발견된 코덱 샘플:
+    ● AMRNB
+    ● AMRWB
+    ● EVS
+    ● PCMA
+    ● PCMU
+
+>>> ALL TESTS PASSED <<<
+```
+
+* 실패 시 `[FAIL]` 줄이 빨간색으로 표시되고 원인이 함께 출력됩니다
+* exit code: 모두 통과 = 0, 하나라도 실패 = 1 (CI 통합 가능)
+* 시험 동안 만들어지는 임시 파일은 `/tmp/enc_tool_test_$$/` 에서 처리되며 종료 시 자동 삭제됩니다
+* 시험 중 사용하는 키 파일은 임시 `KEY_LOC` 에 저장 → 사용자 환경의 `enc.key` 를 건드리지 않음
+
+---
+
 ## 7. 실전 사용 시나리오
 
 ### 7.1 안전 수칙
