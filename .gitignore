@@ -1,0 +1,21 @@
+# Audio samples (사용자가 본인 환경에 직접 두고 시험하도록)
+test/samples/*
+!test/samples/.gitkeep
+
+# Build artifacts
+include/UEnc.h
+lib/Linux3.10.0_ICC/libUEnc.a
+src/Linux*/
+src/*.o
+sample/*.o
+sample/enc_tool.exe
+sample/enc.key
+enc.key
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
+
+# Local Claude Code settings
+.claude/settings.local.json
