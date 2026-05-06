@@ -498,30 +498,73 @@ encrypted in-place: /data/audio/clip.amr
 * 하위 디렉토리로 정리해도 자동 검색됨
 * 샘플이 없는 코덱은 해당 시험만 자동 스킵 (전체 실패가 되지 않음)
 
-### 음원 디렉토리 지정 — 4가지 방법 (우선순위 순)
+### 배포 환경 레이아웃 예시
+
+```
+/SI/AMP/bin/util/
+├── enc_tool.exe                ← 실제 실행 파일
+└── enc_test/
+    ├── run_tests.sh            ← 시험기 (여기서 실행)
+    └── sample/                 ← 음원 파일들
+        ├── *.amr / *.amrnb
+        ├── *.awb / *.amrwb
+        ├── *.evs
+        ├── *.alaw / *.pcma
+        └── *.ulaw / *.pcmu
+```
+
+이 레이아웃이면 시험기가 자동으로:
+- `enc_tool.exe` → 스크립트의 부모 디렉토리(`/SI/AMP/bin/util/`)에서 발견
+- 음원 디렉토리 → 스크립트 옆의 `sample/` (단수)에서 발견
+
+```sh
+cd /SI/AMP/bin/util/enc_test
+./run_tests.sh                  # 그냥 실행하면 끝
+```
+
+### enc_tool.exe 위치 지정 — 5가지 방법 (우선순위 순)
+
+```sh
+# 1) --enc-tool 옵션 (가장 우선)
+./run_tests.sh --enc-tool /opt/bin/enc_tool.exe
+
+# 2) 환경변수 ENC_TOOL
+ENC_TOOL=/opt/bin/enc_tool.exe ./run_tests.sh
+
+# 3) 스크립트 부모 디렉토리의 enc_tool.exe (배포 레이아웃)
+#    enc_test/run_tests.sh → ../enc_tool.exe
+
+# 4) 스크립트 부모의 sample/enc_tool.exe (개발 레이아웃)
+#    test/run_tests.sh → ../sample/enc_tool.exe
+
+# 5) PATH 에서 enc_tool.exe 검색
+```
+
+### 음원 디렉토리 지정 — 5가지 방법 (우선순위 순)
 
 ```sh
 # 1) --samples-dir 옵션 (가장 우선)
-bash test/run_tests.sh --samples-dir /data/audio_samples
-bash test/run_tests.sh -d /data/audio_samples
+./run_tests.sh --samples-dir /data/audio_samples
+./run_tests.sh -d /data/audio_samples
 
 # 2) 위치 인자
-bash test/run_tests.sh /data/audio_samples
+./run_tests.sh /data/audio_samples
 
 # 3) 환경변수
 export ENC_TEST_SAMPLES=/data/audio_samples
-bash test/run_tests.sh
+./run_tests.sh
 
-# 4) 기본 경로: 스크립트 옆 test/samples/
-bash test/run_tests.sh                 # test/samples/ 에 파일이 있으면 자동 사용
+# 4) 스크립트 옆 sample/  (단수, 배포 레이아웃)
+# 5) 스크립트 옆 samples/ (복수, 개발 레이아웃)
+./run_tests.sh                 # 위 두 경로 자동 검색
 ```
 
 위 어느 것도 해당이 없으면 **합성 샘플**(헤더만 정확한 1KB 가짜 파일)이 자동
 생성되어 스모크 테스트로 동작합니다. 운영 환경에서 실음원 없이 시험기가 통과하는
-일을 막으려면 `--strict` 옵션을 추가하세요:
+일을 막으려면 `--strict` 옵션을 추가:
 
 ```sh
-bash test/run_tests.sh --strict --samples-dir /data/audio_samples
+./run_tests.sh --strict --samples-dir /data/audio_samples
 # → 디렉토리가 없거나 비어있으면 즉시 에러로 종료, 합성 fallback 안 함
 ```
 

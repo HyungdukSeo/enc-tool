@@ -2,19 +2,32 @@
 # enc_tool - automated end-to-end test harness
 #
 # Usage:
-#   test/run_tests.sh [options] [SAMPLES_DIR]
+#   run_tests.sh [options] [SAMPLES_DIR]
 #
 # Options:
-#   -d, --samples-dir DIR   시험용 음원 디렉토리 명시 지정 (가장 우선)
+#       --enc-tool PATH     enc_tool.exe 의 위치 명시 지정
+#   -d, --samples-dir DIR   시험용 음원 디렉토리 명시 지정
 #       --strict            합성 샘플 fallback 비활성화 (실음원 필수)
 #   -h, --help              이 도움말 표시
 #
-# 샘플 디렉토리 결정 우선순위 (위에서 발견되면 그걸 사용):
+# enc_tool.exe 위치 결정 우선순위:
+#   1. --enc-tool PATH
+#   2. 환경변수 $ENC_TOOL
+#   3. 스크립트 부모 디렉토리의 enc_tool.exe          (배포 레이아웃)
+#        예) 스크립트=/SI/AMP/bin/util/enc_test/run_tests.sh
+#            enc_tool=/SI/AMP/bin/util/enc_tool.exe
+#   4. 스크립트 부모의 sample/enc_tool.exe            (개발 레이아웃)
+#        예) 스크립트=enc-tool/test/run_tests.sh
+#            enc_tool=enc-tool/sample/enc_tool.exe
+#   5. PATH 에서 enc_tool.exe 찾기
+#
+# 샘플 디렉토리 결정 우선순위:
 #   1. --samples-dir DIR  또는  -d DIR
 #   2. 위치 인자 (SAMPLES_DIR)
 #   3. 환경변수 $ENC_TEST_SAMPLES
-#   4. 스크립트 옆의 test/samples/  (있고 비어있지 않으면)
-#   5. 합성 샘플 자동 생성 (--strict 일 때는 에러로 종료)
+#   4. 스크립트 옆의 sample/   (단수, 배포 레이아웃)
+#   5. 스크립트 옆의 samples/  (복수, 개발 레이아웃)
+#   6. 합성 샘플 자동 생성 (--strict 일 때는 에러로 종료)
 #
 # 음원 디렉토리 권장 구성 (코덱당 1개 이상; 하위 디렉토리 자유):
 #   <SAMPLES_DIR>/
@@ -32,10 +45,10 @@ set -u
 # 설정
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENC="$ROOT_DIR/sample/enc_tool.exe"
+PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORK_DIR="${TMPDIR:-/tmp}/enc_tool_test_$$"
 
+ENC=""
 SAMPLE_SRC=""
 STRICT=0
 
@@ -54,6 +67,14 @@ while [ $# -gt 0 ]; do
             ;;
         --samples-dir=*)
             SAMPLE_SRC="${1#*=}"
+            shift
+            ;;
+        --enc-tool)
+            ENC="${2:-}"
+            shift 2 || { echo "Error: --enc-tool 에 값이 필요합니다" >&2; exit 2; }
+            ;;
+        --enc-tool=*)
+            ENC="${1#*=}"
             shift
             ;;
         --strict)
@@ -79,13 +100,56 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# 우선순위: 옵션 > 위치 인자 > 환경변수 > test/samples/
+# ---------------------------------------------------------------------------
+# enc_tool.exe 위치 결정
+# ---------------------------------------------------------------------------
+if [ -z "$ENC" ] && [ -n "${ENC_TOOL:-}" ]; then
+    ENC="$ENC_TOOL"
+fi
+# 배포 레이아웃: /SI/AMP/bin/util/enc_test/run_tests.sh → /SI/AMP/bin/util/enc_tool.exe
+if [ -z "$ENC" ] && [ -x "$PARENT_DIR/enc_tool.exe" ]; then
+    ENC="$PARENT_DIR/enc_tool.exe"
+fi
+# 개발 레이아웃: enc-tool/test/run_tests.sh → enc-tool/sample/enc_tool.exe
+if [ -z "$ENC" ] && [ -x "$PARENT_DIR/sample/enc_tool.exe" ]; then
+    ENC="$PARENT_DIR/sample/enc_tool.exe"
+fi
+# PATH 검색
+if [ -z "$ENC" ] && command -v enc_tool.exe >/dev/null 2>&1; then
+    ENC="$(command -v enc_tool.exe)"
+fi
+# 그래도 못 찾으면, 개발 레이아웃에서 빌드 시도 후 한 번 더 확인
+if [ -z "$ENC" ] && [ -f "$PARENT_DIR/sample/Makefile" ]; then
+    echo "==> enc_tool.exe 가 없어 ${PARENT_DIR}/sample 에서 빌드 시도..."
+    if (cd "$PARENT_DIR/sample" && make >/dev/null 2>&1); then
+        ENC="$PARENT_DIR/sample/enc_tool.exe"
+    fi
+fi
+if [ -z "$ENC" ] || [ ! -x "$ENC" ]; then
+    echo "Error: enc_tool.exe 를 찾을 수 없습니다." >&2
+    echo "  --enc-tool <PATH>  또는  ENC_TOOL=<PATH>  로 명시하세요." >&2
+    echo "  탐색 경로:" >&2
+    echo "    - $PARENT_DIR/enc_tool.exe" >&2
+    echo "    - $PARENT_DIR/sample/enc_tool.exe" >&2
+    echo "    - PATH" >&2
+    exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# 음원 디렉토리 결정
+# ---------------------------------------------------------------------------
 if [ -z "$SAMPLE_SRC" ] && [ ${#POSITIONAL[@]} -gt 0 ]; then
     SAMPLE_SRC="${POSITIONAL[0]}"
 fi
 if [ -z "$SAMPLE_SRC" ] && [ -n "${ENC_TEST_SAMPLES:-}" ]; then
     SAMPLE_SRC="$ENC_TEST_SAMPLES"
 fi
+# 배포 레이아웃: enc_test/sample/  (단수)
+if [ -z "$SAMPLE_SRC" ] && [ -d "$SCRIPT_DIR/sample" ] && \
+   [ -n "$(find "$SCRIPT_DIR/sample" -type f ! -name '.gitkeep' 2>/dev/null | head -n 1)" ]; then
+    SAMPLE_SRC="$SCRIPT_DIR/sample"
+fi
+# 개발 레이아웃: test/samples/  (복수)
 if [ -z "$SAMPLE_SRC" ] && [ -d "$SCRIPT_DIR/samples" ] && \
    [ -n "$(find "$SCRIPT_DIR/samples" -type f ! -name '.gitkeep' 2>/dev/null | head -n 1)" ]; then
     SAMPLE_SRC="$SCRIPT_DIR/samples"
@@ -95,7 +159,8 @@ fi
 if [ "$STRICT" -eq 1 ]; then
     if [ -z "$SAMPLE_SRC" ]; then
         echo "Error: --strict 모드: 음원 디렉토리를 지정하세요" >&2
-        echo "  -d <DIR>  또는  ENC_TEST_SAMPLES=<DIR>  또는  test/samples/ 에 파일을 두세요" >&2
+        echo "  -d <DIR>  또는  ENC_TEST_SAMPLES=<DIR>" >&2
+        echo "  또는 ${SCRIPT_DIR}/sample/ (또는 samples/) 에 파일을 두세요" >&2
         exit 2
     fi
     if [ ! -d "$SAMPLE_SRC" ]; then
@@ -217,20 +282,12 @@ cleanup() { rm -rf "$WORK_DIR"; }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 0. 빌드 확인
+# 0. 환경 확인
 # ---------------------------------------------------------------------------
-section "0_build"
-if [ ! -x "$ENC" ]; then
-    printf "  enc_tool.exe not found. building...\n"
-    if (cd "$ROOT_DIR/sample" && make >/dev/null 2>&1); then
-        pass "build succeeded"
-    else
-        fail "build failed"
-        exit 1
-    fi
-else
-    pass "enc_tool.exe present"
-fi
+section "0_env"
+printf "  enc_tool : %s\n" "$ENC"
+printf "  스크립트 : %s\n" "$SCRIPT_DIR"
+[ -x "$ENC" ] && pass "enc_tool.exe 실행 가능" || fail "enc_tool.exe 실행 불가"
 "$ENC" -h >/dev/null 2>&1 && pass "-h 실행" || fail "-h 실행"
 
 # ---------------------------------------------------------------------------
