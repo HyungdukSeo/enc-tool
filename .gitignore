@@ -2,6 +2,9 @@
 test/samples/*
 !test/samples/.gitkeep
 
+# Test harness logs
+test/logs/
+
 # Build artifacts
 include/UEnc.h
 lib/Linux3.10.0_ICC/libUEnc.a

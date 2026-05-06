@@ -505,17 +505,20 @@ encrypted in-place: /data/audio/clip.amr
 ├── enc_tool.exe                ← 실제 실행 파일
 └── enc_test/
     ├── run_tests.sh            ← 시험기 (여기서 실행)
-    └── sample/                 ← 음원 파일들
-        ├── *.amr / *.amrnb
-        ├── *.awb / *.amrwb
-        ├── *.evs
-        ├── *.alaw / *.pcma
-        └── *.ulaw / *.pcmu
+    ├── samples/                ← 음원 파일들
+    │   ├── *.amr / *.amrnb
+    │   ├── *.awb / *.amrwb
+    │   ├── *.evs
+    │   ├── *.alaw / *.pcma
+    │   └── *.ulaw / *.pcmu
+    └── logs/                   ← 시험 로그 (자동 생성)
+        └── run_tests_<시각>.log
 ```
 
 이 레이아웃이면 시험기가 자동으로:
 - `enc_tool.exe` → 스크립트의 부모 디렉토리(`/SI/AMP/bin/util/`)에서 발견
-- 음원 디렉토리 → 스크립트 옆의 `sample/` (단수)에서 발견
+- 음원 디렉토리 → 스크립트 옆의 `samples/` 에서 발견
+- 로그 파일 → 스크립트 옆의 `logs/` 에 시각 기반 파일명으로 자동 생성
 
 ```sh
 cd /SI/AMP/bin/util/enc_test
@@ -540,7 +543,7 @@ ENC_TOOL=/opt/bin/enc_tool.exe ./run_tests.sh
 # 5) PATH 에서 enc_tool.exe 검색
 ```
 
-### 음원 디렉토리 지정 — 5가지 방법 (우선순위 순)
+### 음원 디렉토리 지정 — 4가지 방법 (우선순위 순)
 
 ```sh
 # 1) --samples-dir 옵션 (가장 우선)
@@ -554,9 +557,8 @@ ENC_TOOL=/opt/bin/enc_tool.exe ./run_tests.sh
 export ENC_TEST_SAMPLES=/data/audio_samples
 ./run_tests.sh
 
-# 4) 스크립트 옆 sample/  (단수, 배포 레이아웃)
-# 5) 스크립트 옆 samples/ (복수, 개발 레이아웃)
-./run_tests.sh                 # 위 두 경로 자동 검색
+# 4) 스크립트 옆 samples/   ← 자동 인식
+./run_tests.sh
 ```
 
 위 어느 것도 해당이 없으면 **합성 샘플**(헤더만 정확한 1KB 가짜 파일)이 자동
@@ -572,6 +574,55 @@ export ENC_TEST_SAMPLES=/data/audio_samples
 
 ```sh
 bash test/run_tests.sh -h
+```
+
+### 로그 파일 (실패 원인 추적)
+
+시험기 실행 시 모든 출력이 자동으로 로그 파일에 함께 기록됩니다 (ANSI 색상 제거된 plain text).
+
+**기본 동작:**
+- 위치: `<스크립트경로>/logs/run_tests_<시각>.log` (예: `test/logs/run_tests_20260506_131447.log`)
+- 스크립트 디렉토리에 쓰기 권한이 없으면 `/tmp/` 로 자동 fallback
+- 매 실행마다 새 파일 (시각 기반 파일명)
+
+**옵션:**
+```sh
+./run_tests.sh --log /var/log/enc_test.log    # 경로 명시
+./run_tests.sh --no-log                       # 로그 파일 안 만듦
+```
+
+**실패 시 진단 정보:**
+- 각 [FAIL] 줄 아래에 `exit=N`, `cmd: ...`, `output:` (최대 1000자) 가 함께 표시
+- 끝에 "실패한 시험 목록" 으로 모든 실패가 한 곳에 정리됨
+- 로그 파일 경로가 안내됨: `원인 추적: cat '<로그경로>'`
+
+**예시 출력 (실패 케이스):**
+```
+=== 2_string_mode ===
+  [PASS] enc.key 파일 생성됨
+  [FAIL] -s 키 저장
+         │ exit=1
+         │ cmd : /SI/AMP/bin/util/enc_tool.exe --bogus-flag
+         │ output:
+         │ Error: Unknown option '--bogus-flag'.
+         │ Usage:
+         │ ...
+
+  실패한 시험 목록:
+    ✗ [2_string_mode] -s 키 저장
+    ✗ [2_string_mode] -l 출력 = ''
+    ...
+
+  로그 파일 : /SI/AMP/bin/util/enc_test/logs/run_tests_20260506_131654.log
+
+>>> 12 TESTS FAILED <<<
+  원인 추적: cat '/SI/AMP/bin/util/enc_test/logs/run_tests_20260506_131654.log'
+```
+
+**로그 정리:**
+```sh
+# 7일 이전 로그 자동 삭제 (cron 등)
+find test/logs -name '*.log' -mtime +7 -delete
 ```
 
 ### 시험 항목 (총 85개 정도)

@@ -8,6 +8,9 @@
 #       --enc-tool PATH     enc_tool.exe 의 위치 명시 지정
 #   -d, --samples-dir DIR   시험용 음원 디렉토리 명시 지정
 #       --strict            합성 샘플 fallback 비활성화 (실음원 필수)
+#       --log PATH          로그 파일 경로 명시 지정
+#                           (기본: <스크립트경로>/logs/run_tests_<시각>.log)
+#       --no-log            로그 파일 생성 안 함
 #   -h, --help              이 도움말 표시
 #
 # enc_tool.exe 위치 결정 우선순위:
@@ -25,9 +28,8 @@
 #   1. --samples-dir DIR  또는  -d DIR
 #   2. 위치 인자 (SAMPLES_DIR)
 #   3. 환경변수 $ENC_TEST_SAMPLES
-#   4. 스크립트 옆의 sample/   (단수, 배포 레이아웃)
-#   5. 스크립트 옆의 samples/  (복수, 개발 레이아웃)
-#   6. 합성 샘플 자동 생성 (--strict 일 때는 에러로 종료)
+#   4. 스크립트 옆의 samples/
+#   5. 합성 샘플 자동 생성 (--strict 일 때는 에러로 종료)
 #
 # 음원 디렉토리 권장 구성 (코덱당 1개 이상; 하위 디렉토리 자유):
 #   <SAMPLES_DIR>/
@@ -51,6 +53,8 @@ WORK_DIR="${TMPDIR:-/tmp}/enc_tool_test_$$"
 ENC=""
 SAMPLE_SRC=""
 STRICT=0
+LOG_FILE=""
+NO_LOG=0
 
 show_help() {
     sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
@@ -79,6 +83,18 @@ while [ $# -gt 0 ]; do
             ;;
         --strict)
             STRICT=1
+            shift
+            ;;
+        --log)
+            LOG_FILE="${2:-}"
+            shift 2 || { echo "Error: --log 에 값이 필요합니다" >&2; exit 2; }
+            ;;
+        --log=*)
+            LOG_FILE="${1#*=}"
+            shift
+            ;;
+        --no-log)
+            NO_LOG=1
             shift
             ;;
         -h|--help)
@@ -144,12 +160,6 @@ fi
 if [ -z "$SAMPLE_SRC" ] && [ -n "${ENC_TEST_SAMPLES:-}" ]; then
     SAMPLE_SRC="$ENC_TEST_SAMPLES"
 fi
-# 배포 레이아웃: enc_test/sample/  (단수)
-if [ -z "$SAMPLE_SRC" ] && [ -d "$SCRIPT_DIR/sample" ] && \
-   [ -n "$(find "$SCRIPT_DIR/sample" -type f ! -name '.gitkeep' 2>/dev/null | head -n 1)" ]; then
-    SAMPLE_SRC="$SCRIPT_DIR/sample"
-fi
-# 개발 레이아웃: test/samples/  (복수)
 if [ -z "$SAMPLE_SRC" ] && [ -d "$SCRIPT_DIR/samples" ] && \
    [ -n "$(find "$SCRIPT_DIR/samples" -type f ! -name '.gitkeep' 2>/dev/null | head -n 1)" ]; then
     SAMPLE_SRC="$SCRIPT_DIR/samples"
@@ -160,7 +170,7 @@ if [ "$STRICT" -eq 1 ]; then
     if [ -z "$SAMPLE_SRC" ]; then
         echo "Error: --strict 모드: 음원 디렉토리를 지정하세요" >&2
         echo "  -d <DIR>  또는  ENC_TEST_SAMPLES=<DIR>" >&2
-        echo "  또는 ${SCRIPT_DIR}/sample/ (또는 samples/) 에 파일을 두세요" >&2
+        echo "  또는 ${SCRIPT_DIR}/samples/ 에 파일을 두세요" >&2
         exit 2
     fi
     if [ ! -d "$SAMPLE_SRC" ]; then
@@ -173,13 +183,54 @@ if [ "$STRICT" -eq 1 ]; then
     fi
 fi
 
-# 색상 (TTY일 때만)
+# ---------------------------------------------------------------------------
+# 로그 파일 셋업
+# ---------------------------------------------------------------------------
+# 색상 결정은 redirect 전에 먼저 (TTY 여부 판단)
 if [ -t 1 ]; then
     C_RED=$(printf '\033[31m'); C_GRN=$(printf '\033[32m')
     C_YLW=$(printf '\033[33m'); C_BLU=$(printf '\033[34m')
     C_BLD=$(printf '\033[1m');  C_RST=$(printf '\033[0m')
+    HAS_TTY=1
 else
     C_RED=""; C_GRN=""; C_YLW=""; C_BLU=""; C_BLD=""; C_RST=""
+    HAS_TTY=0
+fi
+
+if [ "$NO_LOG" -eq 0 ]; then
+    if [ -z "$LOG_FILE" ]; then
+        LOG_DIR="$SCRIPT_DIR/logs"
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+        if [ ! -d "$LOG_DIR" ] || [ ! -w "$LOG_DIR" ]; then
+            # 스크립트 디렉토리에 못 쓰면 /tmp 로 fallback
+            LOG_DIR="/tmp"
+        fi
+        LOG_FILE="$LOG_DIR/run_tests_$(date +%Y%m%d_%H%M%S).log"
+    else
+        log_parent="$(dirname "$LOG_FILE")"
+        mkdir -p "$log_parent" 2>/dev/null || true
+        if [ ! -d "$log_parent" ] || [ ! -w "$log_parent" ]; then
+            echo "Error: 로그 디렉토리 '$log_parent' 에 쓸 수 없습니다" >&2
+            exit 2
+        fi
+    fi
+
+    # ANSI 코드 제거하면서 로그 파일에 추가, 동시에 터미널에도 출력
+    # process substitution 사용. tee 의 stdout 이 터미널을 유지하도록 처리.
+    : > "$LOG_FILE"
+    exec > >(tee >(sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' >> "$LOG_FILE"))
+    exec 2>&1
+
+    # 로그 파일 헤더
+    {
+        echo "================================================================"
+        echo " enc_tool 시험 로그"
+        echo "   시간   : $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "   호스트 : $(hostname 2>/dev/null || echo unknown)"
+        echo "   사용자 : $(whoami 2>/dev/null || echo unknown)"
+        echo "   인자   : $*"
+        echo "================================================================"
+    }
 fi
 
 PASS=0
@@ -189,6 +240,7 @@ SKIP=0
 SECTIONS=()
 SEC_PASS=()
 SEC_FAIL=()
+FAILED_TESTS=()
 CUR_SEC_IDX=-1
 START_TIME=$(date +%s)
 
@@ -216,8 +268,13 @@ pass() {
 fail() {
     FAIL=$((FAIL + 1))
     SEC_FAIL[$CUR_SEC_IDX]=$((${SEC_FAIL[$CUR_SEC_IDX]} + 1))
+    local sec_label="${SECTIONS[$CUR_SEC_IDX]}"
+    FAILED_TESTS+=("[$sec_label] $1")
     printf "  ${C_RED}[FAIL]${C_RST} %s\n" "$1"
-    [ -n "${2:-}" ] && printf "         ${C_RED}└─ %s${C_RST}\n" "$2"
+    if [ -n "${2:-}" ]; then
+        # 여러 줄이면 들여쓰기해서 보기 좋게
+        printf '%s\n' "$2" | sed "s/^/         ${C_RED}│${C_RST} /"
+    fi
 }
 
 skip() {
@@ -227,12 +284,17 @@ skip() {
 
 expect_ok() {
     local desc="$1"; shift
-    local out
-    if out=$("$@" 2>&1); then
+    local out rc
+    out=$("$@" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
         pass "$desc"
         return 0
     else
-        fail "$desc" "exit=$? cmd='$*' out='$(printf '%s' "$out" | head -c 200)'"
+        local detail="exit=$rc"$'\n'"cmd : $*"
+        if [ -n "$out" ]; then
+            detail="$detail"$'\n'"output:"$'\n'"$(printf '%s' "$out" | head -c 1000)"
+        fi
+        fail "$desc" "$detail"
         return 1
     fi
 }
@@ -693,11 +755,28 @@ report_codec EVS   "$SAMPLE_EVS"
 report_codec PCMA  "$SAMPLE_PCMA"
 report_codec PCMU  "$SAMPLE_PCMU"
 
+if [ "$FAIL" -gt 0 ]; then
+    printf "\n${C_RED}${C_BLD}실패한 시험 목록:${C_RST}\n"
+    for t in "${FAILED_TESTS[@]}"; do
+        printf "  ${C_RED}✗${C_RST} %s\n" "$t"
+    done
+fi
+
+if [ "$NO_LOG" -eq 0 ]; then
+    printf "\n  ${C_BLU}로그 파일${C_RST} : %s\n" "$LOG_FILE"
+fi
+
 printf "\n"
 if [ "$FAIL" -eq 0 ]; then
     printf "${C_GRN}${C_BLD}>>> ALL TESTS PASSED <<<${C_RST}\n"
+    # 로그 출력 flush 를 위해 잠깐 대기
+    [ "$NO_LOG" -eq 0 ] && sleep 0.1
     exit 0
 else
     printf "${C_RED}${C_BLD}>>> %d TESTS FAILED <<<${C_RST}\n" "$FAIL"
+    if [ "$NO_LOG" -eq 0 ]; then
+        printf "  ${C_YLW}원인 추적: cat '%s'${C_RST}\n" "$LOG_FILE"
+    fi
+    [ "$NO_LOG" -eq 0 ] && sleep 0.1
     exit 1
 fi
